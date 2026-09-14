@@ -1,0 +1,11 @@
+flask
+flask-cors
+ultralytics
+opencv-python
+scikit-image
+scikit-learn
+joblib
+numpy
+Pillow
+mysql-connector-python
+python-dotenv
