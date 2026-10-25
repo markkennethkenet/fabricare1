@@ -13,3 +13,5 @@ class DbConfig:
     user = os.getenv("MYSQL_USER", "root")
     password = os.getenv("MYSQL_PASSWORD", "")
     database = os.getenv("MYSQL_DATABASE", "fabricare")
+    ssl_ca = os.getenv("MYSQL_SSL_CA", "")
+    ssl_ca_pem = os.getenv("MYSQL_SSL_CA_PEM", "")

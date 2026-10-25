@@ -1,10 +1,21 @@
 import time
+import tempfile
 from contextlib import contextmanager
+from functools import lru_cache
 
 import mysql.connector
 from mysql.connector import Error as MySqlError
 
 from db_config import DbConfig
+
+
+@lru_cache(maxsize=1)
+def _ca_file(pem):
+    # Aiven's CA is public, but keep deployment configuration out of source.
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False,
+                                     encoding="ascii") as certificate:
+        certificate.write(pem)
+        return certificate.name
 
 
 def _connect(use_database=True):
@@ -17,6 +28,12 @@ def _connect(use_database=True):
     }
     if use_database:
         kwargs["database"] = DbConfig.database
+    ca = _ca_file(DbConfig.ssl_ca_pem) if DbConfig.ssl_ca_pem else DbConfig.ssl_ca
+    if ca:
+        kwargs.update(ssl_ca=ca, ssl_verify_cert=True, ssl_verify_identity=True,
+                      ssl_disabled=False)
+    elif DbConfig.host.endswith(".aivencloud.com"):
+        raise ValueError("Configure MYSQL_SSL_CA_PEM or MYSQL_SSL_CA for Aiven TLS verification.")
     return mysql.connector.connect(**kwargs)
 
 
