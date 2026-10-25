@@ -1,0 +1,16 @@
+**
+!Dockerfile
+!Dockerfile.vercel
+!requirements.txt
+!requirements-hosting.txt
+!assessment.py
+!assessment_config.json
+!auth_routes.py
+!database.py
+!db_config.py
+!fabricare_api.py
+!image_processing.py
+!model_runtime.py
+!serve_api.py
+!model/
+!model/**

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
@@ -19,6 +20,21 @@ class AuthApiService {
   static final AuthApiService instance = AuthApiService._();
 
   static const _tokenKey = 'fabricare_auth_token';
+  static const _requestTimeout = Duration(seconds: 15);
+
+  Future<http.Response> _send(Future<http.Response> request) async {
+    try {
+      return await request.timeout(_requestTimeout);
+    } on TimeoutException {
+      throw const AuthApiException(
+        'The account service took too long to respond. Please try again.',
+      );
+    } on http.ClientException {
+      throw const AuthApiException(
+        'Cannot connect to FabriCare. Check your connection and try again.',
+      );
+    }
+  }
 
   String? _token;
 
@@ -52,7 +68,7 @@ class AuthApiService {
     required String email,
     required String password,
   }) async {
-    final response = await http.post(
+    final response = await _send(http.post(
       Uri.parse('${ApiConfig.baseUrl}/auth/register'),
       headers: _headers(),
       body: jsonEncode({
@@ -60,7 +76,7 @@ class AuthApiService {
         'email': email,
         'password': password,
       }),
-    );
+    ));
     return _parseAuthResponse(response);
   }
 
@@ -68,14 +84,14 @@ class AuthApiService {
     required String email,
     required String password,
   }) async {
-    final response = await http.post(
+    final response = await _send(http.post(
       Uri.parse('${ApiConfig.baseUrl}/auth/login'),
       headers: _headers(),
       body: jsonEncode({
         'email': email,
         'password': password,
       }),
-    );
+    ));
     return _parseAuthResponse(response);
   }
 
@@ -172,7 +188,8 @@ class AuthApiService {
   String _errorMessage(http.Response response) {
     try {
       final body = jsonDecode(response.body) as Map<String, dynamic>;
-      return body['error'] as String? ?? 'Request failed (${response.statusCode})';
+      return body['error'] as String? ??
+          'Request failed (${response.statusCode})';
     } catch (_) {
       return 'Request failed (${response.statusCode})';
     }

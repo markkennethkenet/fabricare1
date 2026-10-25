@@ -98,6 +98,7 @@ class AppTheme {
 Color severityColor(String level) {
   switch (level.toLowerCase()) {
     case 'low':
+    case 'minor':
     case 'good':
     case 'excellent':
     case 'none':

@@ -1,0 +1,7 @@
+{
+  "name": "fabricare-web",
+  "private": true,
+  "scripts": {
+    "build": "bash ../scripts/build_web_vercel.sh"
+  }
+}

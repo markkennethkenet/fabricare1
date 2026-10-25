@@ -3,10 +3,16 @@ import time
 
 from flask import Blueprint, jsonify, request
 from werkzeug.security import check_password_hash, generate_password_hash
+from mysql.connector import Error as MySqlError
 
 from database import get_connection
 
 auth_bp = Blueprint("auth", __name__, url_prefix="/auth")
+
+
+@auth_bp.errorhandler(MySqlError)
+def database_unavailable(_error):
+    return jsonify({"error": "Account service is temporarily unavailable. Please try again later."}), 503
 
 
 def _user_row_to_dict(row):
@@ -146,8 +152,8 @@ def register():
             )
             user_id = cursor.lastrowid
             cursor.close()
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    except MySqlError:
+        raise
 
     user = _fetch_user_by_id(user_id)
     token = _create_token(user_id)

@@ -13,7 +13,13 @@ class ApiConfig {
   /// Set this when testing on a physical phone (same Wi‑Fi as the API server).
   static String? hostOverride;
 
+  /// Hosted API URL, including HTTPS (set when building the app).
+  static const _hostedBaseUrl = String.fromEnvironment('API_BASE_URL');
+
   static String get baseUrl {
+    if (_hostedBaseUrl.isNotEmpty) {
+      return _hostedBaseUrl.replaceFirst(RegExp(r'/+$'), '');
+    }
     final host = hostOverride ?? _defaultHost;
     return 'http://$host:5000';
   }

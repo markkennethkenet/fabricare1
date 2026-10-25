@@ -46,3 +46,10 @@ app.*.map.json
 
 # Local MySQL credentials
 .env
+
+# Isolated Python 3.12 backend runtime
+/.venv-api/
+
+# Local deployment metadata and generated web output
+/.vercel/
+/web/dist/

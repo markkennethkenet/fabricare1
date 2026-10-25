@@ -1,167 +1,100 @@
 import 'dart:convert';
 import 'dart:io';
-
-import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
-
 import '../models/damage_detection.dart';
+import '../models/scan_result.dart';
 import 'api_config.dart';
 
-/// Parsed response from POST /analyze (GLCM fabric + YOLO damage).
 class AnalyzeResponse {
-  final String fabricType;
-  final double? fabricConfidence;
-  final List<Map<String, dynamic>> damages;
-  final int healthScore;
-  final String conditionRating;
-  final String estimatedLifespan;
-  final Map<String, dynamic> careRecommendation;
-
-  const AnalyzeResponse({
-    required this.fabricType,
-    required this.fabricConfidence,
-    required this.damages,
-    required this.healthScore,
-    required this.conditionRating,
-    required this.estimatedLifespan,
-    required this.careRecommendation,
-  });
-
-  factory AnalyzeResponse.fromJson(Map<String, dynamic> json) {
-    return AnalyzeResponse(
-      fabricType: json['fabric_type'] as String,
-      fabricConfidence: (json['fabric_confidence'] as num?)?.toDouble(),
-      damages: (json['damages'] as List<dynamic>? ?? [])
-          .cast<Map<String, dynamic>>(),
-      healthScore: (json['health_score'] as num?)?.round() ?? 0,
-      conditionRating: json['condition_rating'] as String? ?? 'Not assessed',
-      estimatedLifespan: json['estimated_lifespan'] as String? ?? '',
-      careRecommendation:
-          (json['care_recommendation'] as Map<String, dynamic>?) ?? {},
-    );
-  }
-
-  DamageDetectionResult toDamageDetectionResult() {
-    return DamageDetectionResult(
-      stain: _damageItem('stain', 'Stain'),
-      pilling: _damageItem('pilling', 'Pilling'),
-      hole: _damageItem('hole', 'Hole'),
-      needlemark: _damageItem('needlemark', 'Needlemark'),
-    );
-  }
-
-  DamageItem _damageItem(String id, String label) {
-    Map<String, dynamic>? match;
-    for (final entry in damages) {
-      if ((entry['label'] as String?)?.toLowerCase() == id) {
-        match = entry;
-        break;
-      }
-    }
-
-    if (match == null) {
-      return DamageItem(
-        id: id,
-        label: label,
-        confidencePercent: 0,
-        status: DamageStatus.notDetected,
-      );
-    }
-
-    final confidence = (match['confidence'] as num?)?.round() ?? 0;
-    final statusLabel = match['status'] as String? ?? 'Not detected';
-    final status = switch (statusLabel) {
-      'Detected' => DamageStatus.detected,
-      'Possible' => DamageStatus.possible,
-      _ => DamageStatus.notDetected,
-    };
-
-    return DamageItem(
-      id: id,
-      label: label,
-      confidencePercent: confidence,
-      status: status,
-      severity: match['severity'] as String?,
-    );
-  }
+  final Map<String, dynamic> json;
+  const AnalyzeResponse(this.json);
+  factory AnalyzeResponse.fromJson(Map<String, dynamic> json) =>
+      AnalyzeResponse(json);
+  String get fabricType => json['fabric_type'] as String;
+  double? get fabricConfidence =>
+      (json['fabric_confidence'] as num?)?.toDouble();
+  DamageDetectionResult toDamageDetectionResult() =>
+      DamageDetectionResult.fromJson(json['damages'] as List? ?? []);
+  ScanResult toScanResult(List<ScanImage> images, String userId,
+          {Map<String, dynamic> userInputs = const {}}) =>
+      ScanResult(
+          id: DateTime.now().microsecondsSinceEpoch.toString(),
+          userId: userId,
+          garmentName: '$fabricType Garment',
+          images: images,
+          dateScanned: DateTime.now(),
+          analysis: json,
+          userInputs: Map<String, dynamic>.from(
+              json['user_inputs'] as Map? ?? userInputs));
 }
 
-/// HTTP client for fabricare_api.py (GLCM decision tree + YOLO damage model).
 class FabricCareApiService {
   FabricCareApiService._();
   static final FabricCareApiService instance = FabricCareApiService._();
-
   bool isReady = false;
   String? loadError;
-
-  AnalyzeResponse? _cachedResponse;
-  String? _cachedImagePath;
+  List<String> fabricLabels = [];
+  List<String> damageLabels = [];
 
   Future<void> init() async {
-    loadError = null;
     try {
       final response = await http
           .get(Uri.parse('${ApiConfig.baseUrl}/'))
           .timeout(const Duration(seconds: 5));
-
       if (response.statusCode != 200) {
-        throw Exception('API returned status ${response.statusCode}');
+        throw Exception('API returned ${response.statusCode}');
       }
-
       final body = jsonDecode(response.body) as Map<String, dynamic>;
-      debugPrint(
-        'FabriCare API ready: ${body['fabric_model']} + ${body['damage_model']}',
-      );
+      fabricLabels = List<String>.from(body['fabric_labels'] as List? ?? []);
+      damageLabels = List<String>.from(body['damage_labels'] as List? ?? []);
       isReady = true;
+      loadError = null;
     } catch (e) {
       isReady = false;
       loadError = e.toString();
-      debugPrint('FabriCare API unavailable: $e');
     }
   }
 
-  Future<AnalyzeResponse> analyze(File image) async {
-    if (!isReady) {
-      throw StateError(
-        loadError != null
-            ? 'FabriCare API is not reachable.\n\n$loadError'
-            : 'FabriCare API is not reachable. Start fabricare_api.py on ${ApiConfig.baseUrl}',
-      );
-    }
+  // Retain the original single-image API contract for existing callers.
+  Future<AnalyzeResponse> analyze(File image) async => AnalyzeResponse.fromJson(
+      await _upload('/analyze', [ScanImage(view: 'front', path: image.path)],
+          legacy: true));
 
-    if (_cachedImagePath == image.path && _cachedResponse != null) {
-      return _cachedResponse!;
-    }
+  Future<List<Map<String, dynamic>>> checkQuality(
+      List<ScanImage> images) async {
+    final body = await _upload('/quality', images);
+    return (body['per_image'] as List)
+        .map((r) => Map<String, dynamic>.from(r as Map))
+        .toList();
+  }
 
+  Future<AnalyzeResponse> analyzeImages(List<ScanImage> images,
+          {bool allowLowQuality = false,
+          Map<String, dynamic> userInputs = const {}}) async =>
+      AnalyzeResponse.fromJson(await _upload('/analyze', images, fields: {
+        'allow_low_quality': allowLowQuality.toString(),
+        'user_inputs': jsonEncode(userInputs)
+      }));
+
+  Future<Map<String, dynamic>> _upload(String endpoint, List<ScanImage> images,
+      {bool legacy = false, Map<String, String> fields = const {}}) async {
     final request = http.MultipartRequest(
-      'POST',
-      Uri.parse('${ApiConfig.baseUrl}/analyze'),
-    );
-    request.files.add(await http.MultipartFile.fromPath('image', image.path));
-
-    final streamed = await request.send().timeout(const Duration(seconds: 60));
-    final response = await http.Response.fromStream(streamed);
-
-    if (response.statusCode != 200) {
-      String message = 'Request failed (${response.statusCode})';
-      try {
-        final errorBody = jsonDecode(response.body) as Map<String, dynamic>;
-        message = errorBody['error'] as String? ?? message;
-      } catch (_) {}
-      throw Exception(message);
+        'POST', Uri.parse('${ApiConfig.baseUrl}$endpoint'));
+    request.fields.addAll(fields);
+    if (!legacy) {
+      request.fields['views'] = jsonEncode(images.map((i) => i.view).toList());
     }
-
-    final parsed = AnalyzeResponse.fromJson(
-      jsonDecode(response.body) as Map<String, dynamic>,
-    );
-
-    _cachedImagePath = image.path;
-    _cachedResponse = parsed;
-    return parsed;
-  }
-
-  void clearCache() {
-    _cachedImagePath = null;
-    _cachedResponse = null;
+    for (final image in images) {
+      request.files.add(await http.MultipartFile.fromPath(
+          legacy ? 'image' : 'images', image.path));
+    }
+    final streamed = await request.send().timeout(const Duration(seconds: 120));
+    final response = await http.Response.fromStream(streamed)
+        .timeout(const Duration(seconds: 30));
+    final body = jsonDecode(response.body) as Map<String, dynamic>;
+    if (response.statusCode != 200) {
+      throw Exception(body['error'] ?? 'Request failed');
+    }
+    return body;
   }
 }

@@ -50,7 +50,7 @@ class AuthService extends ChangeNotifier {
       throw AuthException(e.message);
     } catch (e) {
       throw const AuthException(
-        'Could not reach FabriCare API. Start fabricare_api.py and check MySQL (.env).',
+        'Could not complete sign up. Please try again.',
       );
     }
   }
@@ -70,7 +70,7 @@ class AuthService extends ChangeNotifier {
       throw AuthException(e.message);
     } catch (e) {
       throw const AuthException(
-        'Could not reach FabriCare API. Start fabricare_api.py and check MySQL (.env).',
+        'Could not complete login. Please try again.',
       );
     }
   }

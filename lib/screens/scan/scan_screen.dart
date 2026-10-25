@@ -1,390 +1,280 @@
 import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
-
 import '../../data/mock_data.dart';
-import '../../services/fabric_classifier.dart';
-import '../../theme/app_theme.dart';
-import '../home/home_shell.dart';
+import '../../models/scan_result.dart';
+import '../../services/fabricare_api_service.dart';
+import '../../widgets/section_card.dart';
 import 'ocr_label_screen.dart';
 import 'scan_result_screen.dart';
 
 class ScanScreen extends StatefulWidget {
   const ScanScreen({super.key});
-
   @override
   State<ScanScreen> createState() => _ScanScreenState();
 }
 
-enum _AnalyzeState { idle, classifying, done }
-
 class _ScanScreenState extends State<ScanScreen> {
-  File? _image;
-  _AnalyzeState _analyzing = _AnalyzeState.idle;
-  String? _classifyStatus;
+  static const _views = ['front', 'back', 'close_up'];
+  final _images = <String, ScanImage>{};
+  final _quality = <String, Map<String, dynamic>>{};
   final _picker = ImagePicker();
+  bool _busy = false;
+  String _status = '';
+  String _condition = 'new';
+  String _useFrequency = 'weekly';
+  String _washingFrequency = 'weekly';
+  bool _purchaseDateKnown = false;
+  DateTime? _purchaseDate;
 
-  bool get _modelReady => FabricClassifier.instance.isReady;
+  Map<String, dynamic> get _userInputs => {
+        'condition': _condition,
+        'use_frequency': _useFrequency,
+        'washing_frequency': _washingFrequency,
+        'purchase_date_known': _purchaseDateKnown,
+        'purchase_date': _purchaseDateKnown && _purchaseDate != null
+            ? _purchaseDate!.toIso8601String().split('T').first
+            : null,
+      };
 
-  Future<void> _pick(ImageSource source) async {
+  Future<void> _pickDate() async {
+    final date = await showDatePicker(
+        context: context,
+        initialDate: _purchaseDate ?? DateTime.now(),
+        firstDate: DateTime(1900),
+        lastDate: DateTime.now());
+    if (date != null && mounted) setState(() => _purchaseDate = date);
+  }
+
+  Widget _historyInputs() => SectionCard(
+      title: 'Garment history',
+      icon: Icons.history,
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        DropdownButtonFormField<String>(
+            initialValue: _condition,
+            decoration: const InputDecoration(labelText: 'Garment condition'),
+            items: const [
+              DropdownMenuItem(value: 'new', child: Text('New')),
+              DropdownMenuItem(
+                  value: 'previously_used', child: Text('Previously used'))
+            ],
+            onChanged: _busy ? null : (v) => setState(() => _condition = v!)),
+        const SizedBox(height: 12),
+        DropdownButtonFormField<String>(
+            initialValue: _useFrequency,
+            decoration: const InputDecoration(labelText: 'Frequency of use'),
+            items: const [
+              DropdownMenuItem(value: 'rarely', child: Text('Rarely')),
+              DropdownMenuItem(value: 'weekly', child: Text('Weekly')),
+              DropdownMenuItem(
+                  value: 'several_times_a_week',
+                  child: Text('Several times a week')),
+              DropdownMenuItem(value: 'daily', child: Text('Daily'))
+            ],
+            onChanged:
+                _busy ? null : (v) => setState(() => _useFrequency = v!)),
+        const SizedBox(height: 12),
+        DropdownButtonFormField<String>(
+            initialValue: _washingFrequency,
+            decoration: const InputDecoration(labelText: 'Washing frequency'),
+            items: const [
+              DropdownMenuItem(value: 'rarely', child: Text('Rarely')),
+              DropdownMenuItem(value: 'monthly', child: Text('Monthly')),
+              DropdownMenuItem(value: 'weekly', child: Text('Weekly')),
+              DropdownMenuItem(
+                  value: 'multiple_per_week',
+                  child: Text('Multiple times per week'))
+            ],
+            onChanged:
+                _busy ? null : (v) => setState(() => _washingFrequency = v!)),
+        CheckboxListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('I know the purchase date'),
+            value: _purchaseDateKnown,
+            onChanged: _busy
+                ? null
+                : (v) => setState(() => _purchaseDateKnown = v ?? false)),
+        if (_purchaseDateKnown)
+          OutlinedButton.icon(
+              onPressed: _busy ? null : _pickDate,
+              icon: const Icon(Icons.calendar_month),
+              label: Text(_purchaseDate == null
+                  ? 'Select purchase date'
+                  : _purchaseDate!.toIso8601String().split('T').first)),
+        const SizedBox(height: 8),
+        const Text(
+            'Lifespan and six-month condition are rule-based estimates, not validated predictions.'),
+      ]));
+
+  Future<void> _pick(String view, ImageSource source) async {
     try {
-      final picked = await _picker.pickImage(source: source, imageQuality: 85);
-      if (picked == null) return;
+      final photo = await _picker.pickImage(
+          source: source, imageQuality: 85, maxWidth: 1920, maxHeight: 1920);
+      if (photo == null || !mounted) return;
       setState(() {
-        _image = File(picked.path);
-        _analyzing = _AnalyzeState.idle;
-        _classifyStatus = null;
+        _images[view] = ScanImage(view: view, path: photo.path);
+        _quality.remove(view);
       });
     } catch (_) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Could not access camera/gallery on this device.')),
-        );
+        _message('Could not access the camera or gallery. Try again.');
       }
     }
   }
 
-  void _retake() {
-    setState(() {
-      _image = null;
-      _analyzing = _AnalyzeState.idle;
-      _classifyStatus = null;
-    });
-  }
-
-  String _formatFabricLabel(String label) {
-    if (label.isEmpty) return label;
-    return label[0].toUpperCase() + label.substring(1);
-  }
-
-  Future<void> _showError(String title, String message) async {
-    if (!mounted) return;
-    setState(() {
-      _analyzing = _AnalyzeState.idle;
-      _classifyStatus = null;
-    });
-    await showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(title),
-        content: Text(message),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('OK')),
-        ],
-      ),
-    );
-  }
+  void _message(String message) => ScaffoldMessenger.of(context)
+      .showSnackBar(SnackBar(content: Text(message)));
 
   Future<void> _analyze() async {
-    if (_image == null) return;
-
-    final classifier = FabricClassifier.instance;
-    if (!classifier.isReady) {
-      final message = classifier.loadError != null
-          ? 'The FabriCare API is not reachable.\n\n${classifier.loadError}\n\nStart fabricare_api.py on your computer first.'
-          : 'The FabriCare API is not ready. Start fabricare_api.py and try again.';
-      await _showError('API unavailable', message);
+    if (_busy || !_images.containsKey('front')) return;
+    if (_condition == 'previously_used' &&
+        _purchaseDateKnown &&
+        _purchaseDate == null) {
+      _message('Select the known purchase date or mark it unknown.');
       return;
     }
-
+    final accountId = AppData.instance.activeUserId;
     setState(() {
-      _analyzing = _AnalyzeState.classifying;
-      _classifyStatus = 'Running GLCM fabric classifier…';
+      _busy = true;
+      _status = 'Checking image quality...';
     });
-
     try {
-      final result = await classifier.classify(_image!);
-      final scanResult = AppData.instance.buildScanResultFromClassification(
-        image: _image!,
-        fabricType: _formatFabricLabel(result.label),
-        confidencePercent: result.confidencePercent.round(),
-      );
-
-      if (mounted) {
-        setState(() => _analyzing = _AnalyzeState.done);
-        Navigator.of(context).push(
-          MaterialPageRoute(builder: (_) => ScanResultScreen(result: scanResult)),
-        );
+      final images = [
+        for (final view in _views)
+          if (_images.containsKey(view)) _images[view]!
+      ];
+      final api = FabricCareApiService.instance;
+      final quality = await api.checkQuality(images);
+      if (!mounted) return;
+      setState(() {
+        for (final entry in quality) {
+          _quality[entry['view'] as String] =
+              Map<String, dynamic>.from(entry['quality'] as Map);
+        }
+      });
+      final failures = quality
+          .where((q) => (q['quality'] as Map)['passed'] != true)
+          .toList();
+      var override = false;
+      if (failures.isNotEmpty) {
+        override = await showDialog<bool>(
+                context: context,
+                builder: (ctx) => AlertDialog(
+                      title: const Text('Review photo quality'),
+                      content: Text(failures
+                          .map((q) =>
+                              "${q['view']}: ${(q['quality'] as Map)['reason']}")
+                          .join('\n\n')),
+                      actions: [
+                        TextButton(
+                            onPressed: () => Navigator.pop(ctx, false),
+                            child: const Text('Retake photos')),
+                        TextButton(
+                            onPressed: () => Navigator.pop(ctx, true),
+                            child: const Text('Continue anyway')),
+                      ],
+                    )) ??
+            false;
+        if (!override || !mounted) return;
       }
+      setState(() => _status = 'Analyzing fabric and visible damage...');
+      final response = await api.analyzeImages(images,
+          allowLowQuality: override, userInputs: _userInputs);
+      final result = await AppData.instance.addAnalysis(images, response,
+          userInputs: _userInputs, expectedUserId: accountId);
+      if (!mounted) return;
+      await Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => ScanResultScreen(result: result)));
     } catch (e) {
-      await _showError(
-        'Classification failed',
-        'Could not identify the fabric via the API.\n\n$e',
-      );
+      if (mounted) _message('Could not complete the scan. $e');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _busy = false;
+          _status = '';
+        });
+      }
     }
   }
 
   @override
-  Widget build(BuildContext context) {
-    final isAnalyzing = _analyzing == _AnalyzeState.classifying;
-    final canAnalyze = _image != null && _modelReady && !isAnalyzing;
-
-    return Scaffold(
-      extendBodyBehindAppBar: true,
-      backgroundColor: Colors.black,
-      body: Stack(
-        fit: StackFit.expand,
-        children: [
-          _image != null
-              ? Image.file(_image!, fit: BoxFit.cover)
-              : Container(
-                  decoration: const BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      colors: [Color(0xFF2B2B26), Color(0xFF15140F)],
-                    ),
-                  ),
-                  child: const Center(
+  Widget build(BuildContext context) => Scaffold(
+        appBar: AppBar(title: const Text('Scan a Garment'), actions: [
+          IconButton(
+              tooltip: 'Scan care label',
+              onPressed: _busy
+                  ? null
+                  : () => Navigator.of(context).push(MaterialPageRoute(
+                      builder: (_) => const OcrLabelScreen())),
+              icon: const Icon(Icons.qr_code_scanner)),
+        ]),
+        body: SafeArea(
+            child: ListView(
+                padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
+                children: [
+              const Text(
+                  'Capture the front, then add the back and a close-up for a more complete assessment.'),
+              const SizedBox(height: 12),
+              const Text(
+                  'Use even lighting without glare. Front/back: approximately 30–50 cm, keeping the garment in frame. Close-up: approximately 10–15 cm; keep it sharp. Adjust distance to fit your garment.'),
+              const SizedBox(height: 16),
+              for (final view in _views)
+                SectionCard(
+                    title:
+                        '${view.replaceAll('_', ' ')} · ${view == 'front' ? 'Required' : 'Optional, encouraged'}',
+                    icon: Icons.camera_alt_outlined,
                     child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.center_focus_weak_rounded, size: 72, color: Colors.white54),
-                        SizedBox(height: 14),
-                        Text(
-                          'Tap the scan button to capture\na fabric photo',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(color: Colors.white70, fontSize: 13, height: 1.4),
-                        ),
-                        SizedBox(height: 6),
-                        Text(
-                          'Use clear, even lighting for best results',
-                          style: TextStyle(color: Colors.white38, fontSize: 11.5),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-
-          if (isAnalyzing)
-            Container(
-              color: Colors.black.withValues(alpha: 0.6),
-              child: Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const CircularProgressIndicator(color: Colors.white),
-                    const SizedBox(height: 16),
-                    Text(
-                      _classifyStatus ?? 'Analyzing…',
-                      style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.w600),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-
-          Positioned(
-            top: 0,
-            left: 0,
-            right: 0,
-            child: SafeArea(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-                child: Row(
-                  children: [
-                    _glassCircle(
-                      icon: Icons.arrow_back_rounded,
-                      onTap: () => Navigator.of(context).pop(),
-                    ),
-                    const Spacer(),
-                    _glassPill(
-                      icon: _modelReady ? Icons.cloud_done_rounded : Icons.cloud_off_rounded,
-                      label: _modelReady ? 'API ready' : 'API offline',
-                      onTap: _modelReady
-                          ? null
-                          : () => _showError(
-                                'API unavailable',
-                                FabricClassifier.instance.loadError != null
-                                    ? 'The FabriCare API is not reachable.\n\n${FabricClassifier.instance.loadError}\n\nRun: python fabricare_api.py'
-                                    : 'Start fabricare_api.py on your computer before scanning.',
-                              ),
-                    ),
-                    const SizedBox(width: 8),
-                    if (_image == null)
-                      _glassPill(
-                        icon: Icons.qr_code_scanner_rounded,
-                        label: 'Scan label',
-                        onTap: () => Navigator.of(context).push(
-                          MaterialPageRoute(builder: (_) => const OcrLabelScreen()),
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-
-          if (_image != null && !_modelReady && !isAnalyzing)
-            Positioned(
-              left: 16,
-              right: 16,
-              bottom: 118,
-              child: SafeArea(
-                top: false,
-                child: _qualityBanner(
-                  icon: Icons.error_outline_rounded,
-                  color: AppColors.danger,
-                  text: 'FabriCare API is offline. Start fabricare_api.py before scanning.',
-                ),
-              ),
-            ),
-
-          if (!isAnalyzing)
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 0,
-              child: SafeArea(
-                top: false,
-                child: Padding(
-                  padding: const EdgeInsets.only(bottom: 18),
-                  child: Center(child: _bottomPill(canAnalyze: canAnalyze)),
-                ),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-
-  Widget _bottomPill({required bool canAnalyze}) {
-    final children = _image == null
-        ? [
-            _pillButton(
-              icon: Icons.home_rounded,
-              onTap: () => Navigator.of(context).pushAndRemoveUntil(
-                MaterialPageRoute(builder: (_) => const HomeShell()),
-                (route) => false,
-              ),
-            ),
-            _pillButton(
-              icon: Icons.center_focus_strong_rounded,
-              highlighted: true,
-              onTap: () => _pick(ImageSource.camera),
-            ),
-            _pillButton(
-              icon: Icons.photo_library_outlined,
-              onTap: () => _pick(ImageSource.gallery),
-            ),
-          ]
-        : [
-            _pillButton(icon: Icons.refresh_rounded, onTap: _retake),
-            _pillButton(
-              icon: Icons.search_rounded,
-              highlighted: canAnalyze,
-              onTap: canAnalyze ? _analyze : (_modelReady ? null : _analyze),
-            ),
-            _pillButton(
-              icon: Icons.home_rounded,
-              onTap: () => Navigator.of(context).pushAndRemoveUntil(
-                MaterialPageRoute(builder: (_) => const HomeShell()),
-                (route) => false,
-              ),
-            ),
-          ];
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
-      decoration: BoxDecoration(
-        color: AppColors.surface.withValues(alpha: 0.96),
-        borderRadius: BorderRadius.circular(40),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.25),
-            blurRadius: 16,
-            offset: const Offset(0, 6),
-          ),
-        ],
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          for (int i = 0; i < children.length; i++) ...[
-            children[i],
-            if (i != children.length - 1) const SizedBox(width: 18),
-          ],
-        ],
-      ),
-    );
-  }
-
-  Widget _pillButton({required IconData icon, required VoidCallback? onTap, bool highlighted = false}) {
-    return InkWell(
-      onTap: onTap,
-      customBorder: const CircleBorder(),
-      child: Container(
-        width: 52,
-        height: 52,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          color: highlighted ? AppColors.mustard : Colors.transparent,
-        ),
-        child: Icon(
-          icon,
-          size: 24,
-          color: onTap == null
-              ? AppColors.inkSoft.withValues(alpha: 0.4)
-              : (highlighted ? AppColors.ink : AppColors.ink.withValues(alpha: 0.8)),
-        ),
-      ),
-    );
-  }
-
-  Widget _glassCircle({required IconData icon, required VoidCallback? onTap}) {
-    return InkWell(
-      onTap: onTap,
-      customBorder: const CircleBorder(),
-      child: Container(
-        width: 40,
-        height: 40,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          color: Colors.black.withValues(alpha: 0.35),
-        ),
-        child: Icon(icon, color: Colors.white, size: 20),
-      ),
-    );
-  }
-
-  Widget _glassPill({required IconData icon, required String label, required VoidCallback? onTap}) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-        decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.35),
-          borderRadius: BorderRadius.circular(20),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, color: Colors.white, size: 14),
-            const SizedBox(width: 5),
-            Text(label, style: const TextStyle(color: Colors.white, fontSize: 11.5, fontWeight: FontWeight.w600)),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _qualityBanner({required IconData icon, required Color color, required String text}) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.95),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Row(
-        children: [
-          Icon(icon, color: color, size: 18),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(text, style: TextStyle(color: color, fontWeight: FontWeight.w600, fontSize: 12.5)),
-          ),
-        ],
-      ),
-    );
-  }
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          if (_images[view] != null) ...[
+                            Image.file(File(_images[view]!.path),
+                                height: 180,
+                                width: double.infinity,
+                                fit: BoxFit.contain),
+                            const SizedBox(height: 8),
+                          ],
+                          if (_quality[view] != null)
+                            Text(_quality[view]!['passed'] == true
+                                ? 'Quality check passed'
+                                : _quality[view]!['reason'] as String),
+                          Wrap(spacing: 8, children: [
+                            OutlinedButton.icon(
+                                onPressed: _busy
+                                    ? null
+                                    : () => _pick(view, ImageSource.camera),
+                                icon: const Icon(Icons.camera_alt_outlined),
+                                label: Text(_images[view] == null
+                                    ? 'Capture'
+                                    : 'Retake')),
+                            TextButton.icon(
+                                onPressed: _busy
+                                    ? null
+                                    : () => _pick(view, ImageSource.gallery),
+                                icon: const Icon(Icons.photo_library_outlined),
+                                label: const Text('Gallery')),
+                            if (view != 'front' && _images[view] != null)
+                              TextButton(
+                                  onPressed: _busy
+                                      ? null
+                                      : () => setState(() {
+                                            _images.remove(view);
+                                            _quality.remove(view);
+                                          }),
+                                  child: const Text('Remove')),
+                          ]),
+                        ])),
+              _historyInputs(),
+              if (_busy) ...[
+                const LinearProgressIndicator(),
+                const SizedBox(height: 8),
+                Text(_status),
+                const SizedBox(height: 12),
+              ],
+              ElevatedButton.icon(
+                  onPressed:
+                      !_busy && _images.containsKey('front') ? _analyze : null,
+                  icon: const Icon(Icons.search),
+                  label: const Text('Analyze garment')),
+            ])),
+      );
 }

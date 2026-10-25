@@ -28,7 +28,8 @@ class ProfileScreen extends StatelessWidget {
         final avgHealth = assessed.isEmpty
             ? 0
             : (assessed.map((r) => r.healthScore!).reduce((a, b) => a + b) / assessed.length).round();
-        final goodCount = assessed.where((r) => r.healthScore! >= 70).length;
+        final goodCount = assessed.where((r) =>
+            r.healthRating == 'Good' || r.healthRating == 'Excellent').length;
 
         return Scaffold(
           backgroundColor: AppColors.background,
@@ -317,13 +318,21 @@ class ProfileScreen extends StatelessWidget {
         backgroundColor: AppColors.surface,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         title: const Text('Clear scan history?', style: TextStyle(fontWeight: FontWeight.w800)),
-        content: const Text('This will remove all saved scans from this device.'),
+        content: const Text('This will remove all saved scans for your account on this device.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
           TextButton(
-            onPressed: () {
-              AppData.instance.clearHistory();
+            onPressed: () async {
               Navigator.pop(ctx);
+              try {
+                await AppData.instance.clearHistory();
+              } catch (_) {
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Could not clear history. Try again.')),
+                  );
+                }
+              }
             },
             child: const Text('Clear', style: TextStyle(color: AppColors.danger, fontWeight: FontWeight.w700)),
           ),

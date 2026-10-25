@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'config/dev_api_host.dart';
+import 'data/mock_data.dart';
 import 'screens/home/home_shell.dart';
 import 'screens/onboarding/onboarding_screen.dart';
 import 'services/api_config.dart';
@@ -20,7 +21,12 @@ Future<void> main() async {
   }
 
   await FabricCareApiService.instance.init();
+  await AppData.instance.init();
   await AuthService.instance.init();
+  void syncHistoryAccount() => AppData.instance
+      .setUserId(AuthService.instance.currentUser?.id.toString());
+  syncHistoryAccount();
+  AuthService.instance.addListener(syncHistoryAccount);
   runApp(const FabriCareApp());
 }
 

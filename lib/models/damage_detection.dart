@@ -1,97 +1,69 @@
-/// Damage detection status derived from model confidence.
-enum DamageStatus {
-  detected,
-  possible,
-  notDetected,
-}
+/// Confidence describes detection certainty. Severity is supplied by the backend.
+enum DamageStatus { detected, possible, notDetected }
 
-/// A single damage type detected (or not) by the YOLO damage model.
 class DamageItem {
   final String id;
   final String label;
   final int confidencePercent;
   final DamageStatus status;
   final String? severity;
+  final double areaRatio;
+  final List<double> bbox;
+  final int imageIndex;
+  final String view;
 
-  const DamageItem({
-    required this.id,
-    required this.label,
-    required this.confidencePercent,
-    required this.status,
-    this.severity,
-  });
+  const DamageItem(
+      {required this.id,
+      required this.label,
+      required this.confidencePercent,
+      required this.status,
+      this.severity,
+      this.areaRatio = 0,
+      this.bbox = const [],
+      this.imageIndex = 0,
+      this.view = 'front'});
 
-  static DamageStatus statusFromConfidence(int confidence) {
-    if (confidence >= 80) return DamageStatus.detected;
-    if (confidence >= 60) return DamageStatus.possible;
-    return DamageStatus.notDetected;
-  }
+  factory DamageItem.fromJson(Map<String, dynamic> json, int index) =>
+      DamageItem(
+        id: json['id'] as String? ?? '0:$index',
+        label: (json['type'] ?? json['label'] ?? 'Unknown').toString(),
+        confidencePercent: (json['confidence'] as num? ?? 0).round(),
+        status: json['status'] == 'Detected'
+            ? DamageStatus.detected
+            : DamageStatus.possible,
+        severity: json['severity'] as String?,
+        areaRatio: (json['area_ratio'] as num? ?? 0).toDouble(),
+        bbox: (json['bbox'] as List? ?? [])
+            .map((v) => (v as num).toDouble())
+            .toList(),
+        imageIndex: (json['image_index'] as num? ?? 0).toInt(),
+        view: json['view'] as String? ?? 'front',
+      );
 
-  String get statusLabel {
-    switch (status) {
-      case DamageStatus.detected:
-        return 'Detected';
-      case DamageStatus.possible:
-        return 'Possible';
-      case DamageStatus.notDetected:
-        return 'Not detected';
-    }
-  }
-
-  String get statusDisplay {
-    switch (status) {
-      case DamageStatus.detected:
-        return 'Detected';
-      case DamageStatus.possible:
-        return 'Possible detection';
-      case DamageStatus.notDetected:
-        return 'Not detected';
-    }
-  }
-
+  String get statusLabel => switch (status) {
+        DamageStatus.detected => 'Detected',
+        DamageStatus.possible => 'Possible',
+        DamageStatus.notDetected => 'Not detected',
+      };
+  String get statusDisplay => statusLabel;
   bool get isConfirmable => status != DamageStatus.notDetected;
-
   bool get defaultConfirmed => status == DamageStatus.detected;
 }
 
-/// Full damage detection output for one fabric scan.
+/// Every instance is retained, including repeated and future damage classes.
 class DamageDetectionResult {
-  final DamageItem stain;
-  final DamageItem pilling;
-  final DamageItem hole;
-  final DamageItem needlemark;
-
-  const DamageDetectionResult({
-    required this.stain,
-    required this.pilling,
-    required this.hole,
-    required this.needlemark,
-  });
-
-  List<DamageItem> get allItems => [stain, pilling, hole, needlemark];
-
+  final List<DamageItem> items;
+  const DamageDetectionResult({required this.items});
+  factory DamageDetectionResult.fromJson(List<dynamic> values) =>
+      DamageDetectionResult(
+        items: [
+          for (var i = 0; i < values.length; i++)
+            DamageItem.fromJson(Map<String, dynamic>.from(values[i] as Map), i)
+        ],
+      );
+  List<DamageItem> get allItems => items;
   List<DamageItem> get confirmableItems =>
-      allItems.where((item) => item.isConfirmable).toList();
-
+      items.where((i) => i.isConfirmable).toList();
   Set<String> get defaultConfirmedIds =>
-      allItems.where((item) => item.defaultConfirmed).map((e) => e.id).toSet();
-}
-
-/// Health score output after user confirms detected damages.
-class FabricHealthAssessment {
-  final int healthScore;
-  final String conditionRating;
-  final String lifespanRange;
-  final String careWarning;
-  final String recommendation;
-  final Set<String> confirmedDamageIds;
-
-  const FabricHealthAssessment({
-    required this.healthScore,
-    required this.conditionRating,
-    required this.lifespanRange,
-    required this.careWarning,
-    required this.recommendation,
-    required this.confirmedDamageIds,
-  });
+      items.where((i) => i.defaultConfirmed).map((i) => i.id).toSet();
 }

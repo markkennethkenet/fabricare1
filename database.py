@@ -13,6 +13,7 @@ def _connect(use_database=True):
         "port": DbConfig.port,
         "user": DbConfig.user,
         "password": DbConfig.password,
+        "connection_timeout": 5,
     }
     if use_database:
         kwargs["database"] = DbConfig.database
