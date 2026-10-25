@@ -16,7 +16,9 @@ Future<void> main() async {
   const envHost = String.fromEnvironment('API_HOST');
   if (envHost.isNotEmpty) {
     ApiConfig.hostOverride = envHost;
-  } else if (kDebugMode && kDevApiHostOverride != null) {
+  } else if (kDebugMode &&
+      const bool.fromEnvironment('USE_LOCAL_API') &&
+      kDevApiHostOverride != null) {
     ApiConfig.hostOverride = kDevApiHostOverride;
   }
 

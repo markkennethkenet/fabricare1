@@ -20,7 +20,7 @@ class AuthApiService {
   static final AuthApiService instance = AuthApiService._();
 
   static const _tokenKey = 'fabricare_auth_token';
-  static const _requestTimeout = Duration(seconds: 15);
+  static const _requestTimeout = Duration(seconds: 30);
 
   Future<http.Response> _send(Future<http.Response> request) async {
     try {
